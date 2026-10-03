@@ -7,10 +7,10 @@
 from langchain_openai import ChatOpenAI
 
 from config import settings
-from app.tools import get_schema, execute_sql, execute_python
+from app.tools import get_schema, execute_sql
 
 # Agent 可用的全部工具（后面 agent.py 也会引用这份清单）
-AGENT_TOOLS = [get_schema, execute_sql, execute_python]
+AGENT_TOOLS = [get_schema, execute_sql]
 
 _llm = None
 

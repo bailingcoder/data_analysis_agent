@@ -73,26 +73,4 @@ def execute_sql(query: str) -> str:
     return "\n".join(lines)
 
 
-@tool
-def execute_python(code: str) -> str:
-    """在受限子进程中执行 Python 代码，返回 stdout。
-
-    用于数据后处理、计算、可视化。代码必须自包含，用 print 输出结果。
-    超时受 python_timeout_seconds 限制（默认 10 秒）。
-    """
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=settings.python_timeout_seconds,
-        )
-        out = proc.stdout.strip()
-        if proc.stderr.strip():
-            out = f"{out}\n[stderr]\n{proc.stderr}".strip()
-        if proc.returncode != 0:
-            out = f"[exit code {proc.returncode}]\n{out}"
-        return out or "[无输出]"
-    except subprocess.TimeoutExpired:
-        return f"[超时：执行超过 {settings.python_timeout_seconds} 秒]"
 
