@@ -23,6 +23,22 @@ def _truncate(s, max_chars=OUTPUT_MAX_CHARS):
     return s if len(s) <= max_chars else s[:max_chars] + "…(截断)"
 
 
+def _extract_output(response) -> str:
+    """从 LLMResult 里抽出最终文本（兼容 message 型和 text 型两种 generation）。"""
+    try:
+        texts = []
+        for gen_list in response.generations:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                if msg is not None:
+                    texts.append(getattr(msg, "content", "") or "")
+                else:
+                    texts.append(getattr(gen, "text", "") or "")
+        return " ".join(t for t in texts if t).strip()
+    except Exception:
+        return ""
+
+
 class AuditCallbackHandler(BaseCallbackHandler):
     """把 LLM / 工具调用落盘为 audit.jsonl。"""
 
@@ -77,6 +93,8 @@ class AuditCallbackHandler(BaseCallbackHandler):
         rec = self._base("llm_end", ts=now)
         rec["run_id"] = rid
         rec["duration_ms"] = duration_ms
+        rec["output"] = _truncate(_extract_output(response))
+        rec["token_usage"] = (response.llm_output or {}).get("token_usage") or {}
         self._write(rec)
 
     def on_llm_error(self, error, **kwargs):
