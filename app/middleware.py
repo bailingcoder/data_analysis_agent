@@ -9,6 +9,8 @@
     ⑥ PII 脱敏
 """
 import re
+import sqlglot
+from sqlglot import exp
 
 from config import settings
 
@@ -34,50 +36,44 @@ class SessionRateLimiter:
         self._counters[session_id] = used + 1
 
 
-# ---- ② SQL 白名单 ----
-DANGEROUS_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|RENAME|GRANT|REVOKE|ATTACH|DETACH|KILL|OPTIMIZE|SYSTEM)\b",
-    re.IGNORECASE,
-)
-# re.IGNORECASE的作用：**大小写不敏感匹配**
-
-def _strip_comments(query: str) -> str:
-    """去掉注释，防止「SELECT 1 -- 换行 DROP」这类藏在注释里的写操作。"""
-    query = re.sub(r"/\*.*?\*/", " ", query, flags=re.DOTALL)   # 块注释
-    query = re.sub(r"--[^\n]*", " ", query)                      # 行注释
-    return query
+# ---- ② SQL 白名单（AST 版）----
+# 只允许 SELECT / UNION / WITH...SELECT 这类只读查询。
+# 根节点必须是 Select 或 Union；其余语句（Insert/Update/Drop/Create/...）一律拒绝。
+_ALLOWED_STMT = (exp.Select, exp.Union)
 
 
 def sql_whitelist(query: str) -> str:
-    """只允许 SELECT / WITH 开头的单条只读查询。"""
-    q = _strip_comments(query).strip().rstrip(";").strip()
-    if not q:
+    """用 sqlglot 解析成 AST，只放行根节点为 SELECT / UNION 的只读查询。"""
+    try:
+        statements = sqlglot.parse(query, read="clickhouse")
+    except sqlglot.errors.ParseError as e:
+        raise MiddlewareError(f"SQL 无法解析：{e}")
+
+    if not statements:
         raise MiddlewareError("SQL 为空。")
 
-    first = q.split()[0].upper()
-    if first not in {"SELECT", "WITH"}:
-        raise MiddlewareError(f"只允许 SELECT 查询，收到以 {first} 开头的语句。")
+    for stmt in statements:
+        if not isinstance(stmt, _ALLOWED_STMT):
+            kind = stmt.key or type(stmt).__name__  # 如 insert / drop / create
+            raise MiddlewareError(f"只允许 SELECT 查询，检测到 {kind.upper()} 语句，已拦截。")
 
-    m = DANGEROUS_RE.search(q)
-    if m:
-        raise MiddlewareError(f"检测到危险关键字 {m.group(1).upper()}，已拦截。")
-    return q
+    return query
 
 
-# ---- ③ 表白名单 ----
-FORBIDDEN_TABLE_RE = re.compile(
-    r"\b(ods_\w+|meta_tables|meta_columns|system\.\w+)\b",
-    re.IGNORECASE,
-)
-
-
+# ---- ③ 表白名单（AST 版）----
 def table_whitelist(query: str) -> str:
-    """只允许访问 dwd_/dws_/ads_ 层，禁止 ODS 贴源层和内部元数据表。"""
-    m = FORBIDDEN_TABLE_RE.search(query)
-    if m:
-        raise MiddlewareError(
-            f"禁止访问内部表 {m.group(1)}，只能查询 dwd_/dws_/ads_ 层。"
-        )
+    """遍历 AST 里所有被引用的表，禁止 ods_/meta_ 前缀和 system 库。"""
+    try:
+        statement = sqlglot.parse_one(query, read="clickhouse")
+    except sqlglot.errors.ParseError as e:
+        raise MiddlewareError(f"SQL 无法解析：{e}")
+
+    for table in statement.find_all(exp.Table):
+        # 拼出完整引用（如 analytics.ods_orders / system.tables）
+        ref = ".".join(p for p in (table.catalog, table.db, table.name) if p)
+        segs = ref.lower().split(".")
+        if segs[0] == "system" or any(s.startswith(("ods_", "meta_")) for s in segs):
+            raise MiddlewareError(f"禁止访问内部表 {ref}，只能查询 dwd_/dws_/ads_ 层。")
     return query
 
 
