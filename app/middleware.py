@@ -11,29 +11,41 @@
 import re
 import sqlglot
 from sqlglot import exp
+import redis
 
 from config import settings
+from app.redis_client import get_redis
 
 
 class MiddlewareError(Exception):
     """被中间件拦截时抛出。message 会原样返回给 LLM，让它知道为什么被拒、如何修正。"""
 
 
-# ---- ① 会话限流 ----
-class SessionRateLimiter:
-    """按 session_id 计数，超过上限就拒绝（防死循环 / 无限烧 token）。"""
+# ---- ① 会话限流（Redis 固定窗口版）----
+class RedisRateLimiter:
+    """按 session_id 的固定窗口限流，计数器存 Redis（多实例共享 + INCR 原子 + TTL 自动过期）。"""
 
-    def __init__(self, max_queries: int):
+    def __init__(self, max_queries: int, window_seconds: int, redis_factory):
         self.max_queries = max_queries
-        self._counters: dict[str, int] = {}
+        self.window_seconds = window_seconds
+        self.redis = redis_factory()
+
+    def _key(self, session_id: str) -> str:
+        return f"rate_limit:{session_id}"          # 前缀命名空间，避免和别的 key 撞
 
     def check(self, session_id: str) -> None:
-        used = self._counters.get(session_id, 0)
-        if used >= self.max_queries:
+        key = self._key(session_id)
+        try:
+            used = self.redis.incr(key)            # 原子自增，返回自增后的值
+            if used == 1:
+                self.redis.expire(key, self.window_seconds)   # 首次计数才设 TTL
+        except redis.RedisError as e:
+            # fail-closed：Redis 挂了宁可拒绝，也不能失去限流保护
+            raise MiddlewareError(f"限流服务不可用：{e}")
+        if used > self.max_queries:
             raise MiddlewareError(
-                f"本会话查询已达上限（{self.max_queries} 次），请精简问题或开新会话。"
+                f"本会话在 {self.window_seconds} 秒内查询已达上限（{self.max_queries} 次），请稍后再试。"
             )
-        self._counters[session_id] = used + 1
 
 
 # ---- ② SQL 白名单（AST 版）----
@@ -49,6 +61,8 @@ def sql_whitelist(query: str) -> str:
     except sqlglot.errors.ParseError as e:
         raise MiddlewareError(f"SQL 无法解析：{e}")
 
+    # 过滤掉 None 节点
+    statements = [s for s in statements if s is not None]
     if not statements:
         raise MiddlewareError("SQL 为空。")
 
@@ -122,7 +136,11 @@ class SQLMiddleware:
 
     def __init__(self, ch_factory):
         self.ch = ch_factory()
-        self.limiter = SessionRateLimiter(settings.max_queries_per_session)
+        self.limiter = RedisRateLimiter(
+            settings.max_queries_per_session,
+            settings.rate_limit_window_seconds,
+            get_redis
+        )
         self.pii_columns = self._load_pii_columns()
 
     def _load_pii_columns(self) -> set[str]:

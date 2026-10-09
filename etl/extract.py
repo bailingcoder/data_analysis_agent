@@ -46,3 +46,53 @@ def extract_mysql_to_ods() -> None:
     finally:
         mysql.close()
         ch.close()
+
+
+import json
+from pathlib import Path
+
+WATERMARK_FILE = Path(__file__).resolve().parent.parent / "data" / "watermark.json"
+
+
+def _load_watermark() -> dict:
+    if WATERMARK_FILE.exists():
+        return json.loads(WATERMARK_FILE.read_text(encoding="utf-8"))
+    return {}
+
+
+def _save_watermark(wm: dict) -> None:
+    WATERMARK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WATERMARK_FILE.write_text(
+        json.dumps(wm, default=str, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def extract_mysql_to_ods_incremental() -> None:
+    """增量抽取：只拉 updated_at 晚于水位线的行，不 TRUNCATE，靠 ReplacingMergeTree 去重。"""
+    mysql = get_mysql()
+    ch = get_clickhouse()
+    batch_ts = datetime.now()
+    watermark = _load_watermark()
+    new_watermark = {}
+    try:
+        for src, dst in TABLES.items():
+            cols = COLUMNS[src]
+            last = watermark.get(src, "1970-01-01 00:00:00")
+            with mysql.cursor() as cur:
+                cur.execute(
+                    f"SELECT {', '.join(cols)} FROM `{src}` WHERE updated_at > %s ORDER BY updated_at",
+                    (last,),
+                )
+                rows = cur.fetchall()
+
+            if rows:
+                data = [tuple(r[c] for c in cols) + (batch_ts,) for r in rows]
+                ch.insert(dst, data, column_names=cols + ["_etl_loaded_at"])
+                new_watermark[src] = max(r["updated_at"] for r in rows)
+            logger.info("增量抽取 %s -> %s: %d 行", src, dst, len(rows))
+    finally:
+        mysql.close()
+        ch.close()
+
+    if new_watermark:
+        _save_watermark(new_watermark)

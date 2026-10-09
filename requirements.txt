@@ -22,3 +22,7 @@ python-dotenv>=1.0.0
 
 pymysql
 clickhouse-connect
+
+redis>=5.0.0
+
+pytest>=7.0.0

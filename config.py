@@ -5,12 +5,9 @@
 from __future__ import annotations
 
 import os
-import yaml
-import logging
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from logging.config import dictConfig
 
 from dotenv import load_dotenv
 
@@ -52,6 +49,16 @@ class Settings:
     clickhouse_password: str = field(default_factory=lambda: os.getenv("CLICKHOUSE_PASSWORD", "clickhouse123"))
     clickhouse_database: str = field(default_factory=lambda: os.getenv("CLICKHOUSE_DATABASE", "analytics"))
 
+
+    # ---- Redis（限流器共享存储）----
+    redis_host: str  = field(default_factory=lambda: os.getenv("REDIS_HOST", "127.0.0.1"))
+    redis_port: int = field(default_factory=lambda: int(os.getenv("REDIS_PORT", "6379")))
+    redis_password: str = field(default_factory=lambda: os.getenv("REDIS_PASSWORD", ""))
+    redis_db: int = field(default_factory=lambda: int(os.getenv("REDIS_DB", "0")))
+    # 限流窗口（秒）：固定窗口，窗口内最多 max_queries_per_session 次查询
+    rate_limit_window_seconds: int = 60
+
+
     # ---- 中间件参数 ----
     # execute_sql 结果集最大行数，超过会被截断
     max_result_rows: int = 100
@@ -64,22 +71,5 @@ class Settings:
 
     # ---- 审计 ----
     audit_log_path: Path = field(default_factory=lambda: PROJECT_ROOT / "logs" / "audit.jsonl")
-
-    def setup_logging(self,name:str="data_analysis_agent"):
-        """从 logging.yaml 加载日志配置（幂等：重复调用只初始化一次）。"""
-        global _configured
-
-        if not _configured:
-            with open(PROJECT_ROOT / "logging.yaml", "r") as f:
-                logging_config = yaml.safe_load(f).get("logging", {})
-
-            for handler in logging_config.get("handlers", {}).values():
-                if "filename" in handler:
-                    file_path = PROJECT_ROOT / handler["filename"]
-                    file_path.parent.mkdir(parents=True, exist_ok=True)  # 关键：自动建 logs/ 目录
-                    handler["filename"] = str(file_path)
-            dictConfig(logging_config)
-            _configured = True
-        return logging.getLogger(name)
 
 settings = Settings()
