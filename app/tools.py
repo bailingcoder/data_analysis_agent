@@ -9,12 +9,18 @@ import sys
 
 from langchain_core.tools import tool
 
-from config import settings, session_id_var
+from config import session_id_var
 from app.db import get_clickhouse
 from app.middleware import MiddlewareError, SQLMiddleware
 
 
-_middleware = SQLMiddleware(get_clickhouse)
+_middleware = None
+
+def _get_middleware():
+    global _middleware
+    if _middleware is None:
+        _middleware = SQLMiddleware(get_clickhouse)
+    return _middleware
 
 @tool
 def get_schema(table_name: str = "") -> str:
@@ -65,7 +71,7 @@ def execute_sql(query: str) -> str:
     结果超过 max_result_rows 行时会被截断。
     """
     try:
-        columns,rows = _middleware.run(session_id_var.get(),query)
+        columns,rows = _get_middleware().run(session_id_var.get(),query)
     except MiddlewareError as e:
         return f"[已拦截] {e}"
     lines = ["\t".join(columns)]

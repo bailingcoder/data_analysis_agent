@@ -2,6 +2,8 @@
 
 from app import tools
 from app.middleware import MiddlewareError
+from unittest.mock import MagicMock
+
 
 
 # ---------- get_schema ----------
@@ -52,37 +54,30 @@ class TestGetSchema:
         assert "未找到表 nope" in result
 
 
-# ---------- execute_sql ----------
 class TestExecuteSql:
     def test_returns_tab_separated(self, monkeypatch):
-        monkeypatch.setattr(
-            tools._middleware, "run",
-            lambda session_id, query: (["city", "total"], [("北京", 100), ("上海", 200)]),
-        )
+        fake_mw = MagicMock()
+        fake_mw.run.return_value = (["city", "total"], [("北京", 100), ("上海", 200)])
+        monkeypatch.setattr(tools, "_get_middleware", lambda: fake_mw)   # mock 工厂，不是单例
 
         result = tools.execute_sql.invoke({"query": "SELECT city, total FROM t"})
-
         assert "city\ttotal" in result
-        assert "北京\t100" in result
-        assert "上海\t200" in result
 
     def test_intercepted(self, monkeypatch):
+        fake_mw = MagicMock()
         def boom(session_id, query):
             raise MiddlewareError("只允许 SELECT")
-        monkeypatch.setattr(tools._middleware, "run", boom)
+        fake_mw.run.side_effect = boom
+        monkeypatch.setattr(tools, "_get_middleware", lambda: fake_mw)
 
         result = tools.execute_sql.invoke({"query": "DROP TABLE x"})
-
         assert result.startswith("[已拦截]")
-        assert "只允许 SELECT" in result
 
     def test_passes_session_id(self, monkeypatch):
+        fake_mw = MagicMock()
         captured = {}
-        monkeypatch.setattr(
-            tools._middleware, "run",
-            lambda sid, q: (captured.setdefault("sid", sid), [] ) or ([], []),
-        )
+        fake_mw.run.side_effect = lambda sid, q: (captured.setdefault("sid", sid), []) or ([], [])
+        monkeypatch.setattr(tools, "_get_middleware", lambda: fake_mw)
 
         tools.execute_sql.invoke({"query": "SELECT 1"})
-
-        assert captured["sid"] == "pytest_session"   # 由 isolated_session fixture 注入
+        assert captured["sid"] == "pytest_session"

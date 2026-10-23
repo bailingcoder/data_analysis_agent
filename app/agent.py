@@ -21,12 +21,14 @@ from app.prompts import SYSTEM_PROMPT
 class AgentState(BaseModel):
     messages:Annotated[list[AnyMessage],add_messages] = Field(default_factory=list)
 
-_llm = create_agent_llm()
+_llm = None
 
-def _agent_node(state:AgentState):
-    """agent 节点：把对话历史喂给 LLM，返回它的决策（可能带 tool_calls）。"""
+def _agent_node(state):
+    global _llm
+    if _llm is None:
+        _llm = create_agent_llm()      # 第一次真正运行时才构造
     resp = _llm.invoke(state.messages)
-    return {"messages":[resp]}
+    return {"messages": [resp]}
 
 def _build_messages(history, question):
     return [SystemMessage(content=SYSTEM_PROMPT)] + history + [HumanMessage(content=question)]
