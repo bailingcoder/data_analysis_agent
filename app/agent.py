@@ -51,29 +51,28 @@ def build_agent():
 
     return graph.compile()
 
-def run_agent(history:list[AnyMessage], question:str, session_id:str):
-    session_id_var.set(session_id)          # 钩子1：给回调设置 session_id
+def run_agent(history, question, session_id):
+    token = session_id_var.set(session_id)
+    try:
+        callbacks = AuditCallbackHandler()
+        agent = build_agent()
+        messages = _build_messages(history, question)
+        result = agent.invoke({"messages": messages}, config={"callbacks": [callbacks]})
+        return result["messages"][-1].content
+    finally:
+        session_id_var.reset(token)          # 无论正常/异常都还原
 
-    callbacks = AuditCallbackHandler()
-    agent = build_agent()
 
-    messages = _build_messages(history, question)
-    result = agent.invoke(
-        {"messages":messages},
-        config = {"callbacks":[callbacks]}
-    )
-    return result["messages"][-1].content
-
-def stream_agent(history, question:str, session_id:str):
-    """流式版：按节点逐段产出，前端可实时展示中间过程。"""
-    session_id_var.set(session_id)
-
-    callbacks = AuditCallbackHandler()
-    agent = build_agent()
-
-    messages = _build_messages(history, question)
-    return agent.stream(
-        {"messages": messages},
-        config={"callbacks": [callbacks]},
-        stream_mode="updates",
-    )
+def stream_agent(history, question, session_id):
+    token = session_id_var.set(session_id)
+    try:
+        callbacks = AuditCallbackHandler()
+        agent = build_agent()
+        messages = _build_messages(history, question)
+        yield from agent.stream(             # 注意：从 return 改成 yield from
+            {"messages": messages},
+            config={"callbacks": [callbacks]},
+            stream_mode="updates",
+        )
+    finally:
+        session_id_var.reset(token)

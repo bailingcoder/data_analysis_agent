@@ -8,3 +8,4 @@ logs/
 .streamlit/
 .DS_Store
 sessions/
+.coverage
