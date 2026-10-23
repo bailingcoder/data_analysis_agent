@@ -4,8 +4,6 @@
 LLM 就是靠读这段中文说明，决定什么时候该调哪个工具、传什么参数。
 所以 docstring 写得越清楚，Agent 用得越准。
 """
-import subprocess
-import sys
 
 from langchain_core.tools import tool
 
